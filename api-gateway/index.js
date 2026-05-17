@@ -1,6 +1,23 @@
+/**
+ * Spotr · API Gateway
+ * ---------------------------------------------------------------------------
+ * Punto único de entrada de la plataforma (puerto 5500). El frontend solo
+ * conoce este servicio; nunca habla con los microservicios directamente.
+ *
+ * Responsabilidades:
+ *   1. Autenticación: registro, login y emisión de JWT.
+ *   2. Verificación del JWT en todas las rutas protegidas.
+ *   3. Subida de imágenes a Cloudinary (`/api/upload`).
+ *   4. Proxy REST     → places_rest  (http://localhost:4000)  vía Axios.
+ *   5. Proxy GraphQL  → maps_graphql (http://localhost:4001)  vía Axios.
+ *
+ * Variables de entorno: MONGO_URI, JWT_SECRET, CLOUDINARY_* (ver .env.example).
+ * ---------------------------------------------------------------------------
+ */
+
 // ============================================================================
 // ARCHIVO PRINCIPAL: API GATEWAY
-// Propósito: Actuar como el punto único de entrada para todas las peticiones 
+// Propósito: Actuar como el punto único de entrada para todas las peticiones
 // del cliente (Frontend). Este servicio centraliza el enrutamiento, gestiona 
 // la seguridad mediante autenticación JWT y se comunica con los microservicios 
 // internos (REST y GraphQL) utilizando Axios.
@@ -13,21 +30,33 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import mongoose from 'mongoose';
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
 
-// Importación de controladores y middlewares personalizados
 import { register, login } from './src/controllers/authController.js';
 import { verificarToken } from './src/middleware/authMiddleware.js';
 
 // Cargar variables de entorno (ej. puertos, secretos JWT, URI de base de datos)
 dotenv.config();
 
-const app = express();
+// Cloudinary config
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key:    process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-// ============================================================================
-// CONFIGURACIÓN DE MIDDLEWARES GLOBALES
-// ============================================================================
-app.use(cors()); // Permite peticiones desde el navegador (Frontend)
-app.use(express.json()); // Permite al servidor entender cuerpos de petición en formato JSON
+// URLs de los microservicios internos. Configurables por entorno para que
+// funcione tanto en local (localhost) como en Docker (nombre del servicio).
+const PLACES_SERVICE_URL = process.env.PLACES_SERVICE_URL || 'http://localhost:4000';
+const MAPS_SERVICE_URL   = process.env.MAPS_SERVICE_URL   || 'http://localhost:4001';
+
+// Multer — memoria RAM (no guarda en disco)
+const upload = multer({ storage: multer.memoryStorage() });
+
+const app = express();
+app.use(cors());
+app.use(express.json());
 
 // ============================================================================
 // CONEXIÓN A BASE DE DATOS (EXCLUSIVA PARA AUTENTICACIÓN)
@@ -42,8 +71,32 @@ mongoose.connect(process.env.MONGO_URI)
 // RUTAS PÚBLICAS: AUTENTICACIÓN Y GENERACIÓN DE JWT
 // Estas rutas no están protegidas ya que su propósito es identificar al usuario.
 // ============================================================================
-app.post('/auth/register', register); // Crea un nuevo usuario en la base de datos
-app.post('/auth/login', login);       // Valida credenciales y devuelve un token JWT
+app.post('/auth/register', register);
+app.post('/auth/login', login);
+
+// ============================================================================
+// UPLOAD DE IMAGEN → CLOUDINARY
+// Recibe un archivo (multipart/form-data), lo sube a Cloudinary y devuelve la URL.
+// ============================================================================
+app.post('/api/upload', verificarToken, upload.single('image'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo.' });
+
+        // Subir buffer a Cloudinary
+        const result = await new Promise((resolve, reject) => {
+            const stream = cloudinary.uploader.upload_stream(
+                { folder: 'spotr', resource_type: 'image' },
+                (error, result) => error ? reject(error) : resolve(result)
+            );
+            stream.end(req.file.buffer);
+        });
+
+        res.json({ url: result.secure_url });
+    } catch (error) {
+        console.error('Error subiendo imagen:', error);
+        res.status(500).json({ error: 'Error al subir la imagen.' });
+    }
+});
 
 // ============================================================================
 // ENRUTAMIENTO REST (MICROSERVICIO 1: PUBLICACIÓN DE LUGARES)
@@ -55,9 +108,9 @@ app.use('/api/places', verificarToken, async (req, res) => {
         // Redirección de la petición HTTP original hacia el microservicio REST (Puerto 4000)
         const response = await axios({
             method: req.method, // Respeta si es GET, POST, PUT, DELETE
-            url: `http://localhost:4000/api/places${req.url}`,
+            url: `${PLACES_SERVICE_URL}/api/places${req.url}`,
             data: req.body,     // Pasa el cuerpo de la petición (ej. datos de un nuevo lugar)
-            headers: { ...req.headers, host: undefined } // Pasa los headers originales
+            headers: { 'Content-Type': 'application/json' } // Solo el header necesario
         });
         // Devuelve al cliente la respuesta exacta del microservicio
         res.status(response.status).json(response.data);
@@ -91,7 +144,7 @@ const resolvers = {
     Query: {
         mapLocations: async () => {
             // El Gateway hace una petición POST por Axios al verdadero MS GraphQL (Puerto 4001)
-            const response = await axios.post('http://localhost:4001/graphql', {
+            const response = await axios.post(`${MAPS_SERVICE_URL}/graphql`, {
                 query: `query { locations { id title lat lng } }`
             });
             // Extrae la data de la respuesta anidada típica de GraphQL y la devuelve al cliente

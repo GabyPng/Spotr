@@ -1,7 +1,16 @@
+/**
+ * Resolvers del microservicio de mapas.
+ *
+ * `locations` trae solo `title` y `location` de cada lugar y traduce el
+ * arreglo GeoJSON `[lng, lat]` de MongoDB a campos `lat`/`lng` explícitos,
+ * que es lo que espera React-Leaflet en el frontend.
+ */
+
 import PlaceMap from '../models/PlaceMap.js';
 
 export const resolvers = {
     Query: {
+        /** Devuelve todas las ubicaciones para pintar pines en el mapa. */
         locations: async () => {
             try {
                 // Traemos solo el título y la ubicación para ahorrar memoria

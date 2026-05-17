@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Spotr · Orquestación de servicios
+#
+# Levanta toda la plataforma con un solo comando:
+#
+#     docker compose up --build
+#
+# Servicios y puertos publicados en el host:
+#   · frontend      → http://localhost:5174   (Nginx sirviendo el build Vite)
+#   · api-gateway   → http://localhost:5500   (punto único de entrada)
+#   · places_rest   → http://localhost:4000   (interno; expuesto para depurar)
+#   · maps_graphql  → http://localhost:4001   (interno; expuesto para depurar)
+#   · mongo         → localhost:27017         (MongoDB local con volumen)
+#
+# Base de datos: por defecto usa el contenedor `mongo` local. Para usar
+# MongoDB Atlas, define MONGO_URI en un archivo `.env` en esta carpeta y se
+# usará automáticamente en lugar del Mongo local.
+#
+# Cloudinary / JWT: el api-gateway lee CLOUDINARY_* y JWT_SECRET del archivo
+# `.env` de esta carpeta (ver .env.example). Sin esas credenciales, la subida
+# de imágenes fallará en tiempo de ejecución (el resto funciona igual).
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Base de datos local ──────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Microservicio REST de lugares ────────────────────────────────────────
+  places_rest:
+    build: ./places_rest
+    restart: unless-stopped
+    environment:
+      - PORT=4000
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/spotr}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+
+  # ── Microservicio GraphQL de mapas ───────────────────────────────────────
+  maps_graphql:
+    build: ./maps_graphql
+    restart: unless-stopped
+    environment:
+      - PORT=4001
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/spotr}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "4001:4001"
+
+  # ── API Gateway (punto único de entrada) ─────────────────────────────────
+  api-gateway:
+    build: ./api-gateway
+    restart: unless-stopped
+    # CLOUDINARY_* y JWT_SECRET vienen del .env de esta carpeta.
+    # `required: false` evita que Compose falle si aún no existe el .env
+    # (copia .env.example a .env para habilitar la subida de imágenes).
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PORT=5500
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/spotr}
+      # Resolución por nombre de servicio dentro de la red de Compose
+      - PLACES_SERVICE_URL=http://places_rest:4000
+      - MAPS_SERVICE_URL=http://maps_graphql:4001
+    depends_on:
+      mongo:
+        condition: service_healthy
+      places_rest:
+        condition: service_started
+      maps_graphql:
+        condition: service_started
+    ports:
+      - "5500:5500"
+
+  # ── Frontend (SPA servida por Nginx) ─────────────────────────────────────
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api-gateway
+    ports:
+      - "5174:80"
+
+volumes:
+  mongo-data:

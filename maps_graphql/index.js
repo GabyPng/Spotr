@@ -1,3 +1,16 @@
+/**
+ * Spotr · Microservicio GraphQL de mapas (maps_graphql)
+ * ---------------------------------------------------------------------------
+ * Servidor Apollo interno (puerto 4001). No es público: el API Gateway le
+ * reenvía las queries de mapa. Solo expone la query `locations`, que lee la
+ * colección `places` (compartida con places_rest) proyectando únicamente
+ * título y coordenadas para minimizar el tráfico que pinta el mapa.
+ *
+ * El servidor solo arranca si la conexión a MongoDB tiene éxito.
+ * Variable de entorno: MONGO_URI (ver .env.example).
+ * ---------------------------------------------------------------------------
+ */
+
 import express from 'express';
 import { ApolloServer } from '@apollo/server';
 import { expressMiddleware } from '@apollo/server/express4';
